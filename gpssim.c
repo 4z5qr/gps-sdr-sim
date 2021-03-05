@@ -11,6 +11,7 @@
 #include <unistd.h>
 #endif
 #include "gpssim.h"
+#include "galileo.h"
 
 int sinTable512[] = {
 	   2,   5,   8,  11,  14,  17,  20,  23,  26,  29,  32,  35,  38,  41,  44,  47,
@@ -785,7 +786,15 @@ double subGpsTime(gpstime_t g1, gpstime_t g0)
 
 	return(dt);
 }
+double subGalileoTime(galileo_time_t g1, galileo_time_t g0)
+{
+	double dt;
 
+	dt = g1.sec - g0.sec;
+	dt += (double)(g1.week - g0.week) * SECONDS_IN_WEEK;
+
+	return(dt);
+}
 gpstime_t incGpsTime(gpstime_t g0, double dt)
 {
 	gpstime_t g1;
@@ -1305,6 +1314,58 @@ void computeRange(range_t *rho, ephem_t eph, ionoutc_t *ionoutc, gpstime_t g, do
 	// Add ionospheric delay
 	rho->iono_delay = ionosphericDelay(ionoutc, g, llh, rho->azel);
 	rho->range += rho->iono_delay;
+
+	return;
+}
+/*! \brief Compute the code phase for a given Galileo channel (satellite)
+ *  \param chan Channel on which we operate (is updated)
+ *  \param[in] rho1 Current range, after \a dt has expired
+ *  \param[in dt delta-t (time difference) in seconds
+ */
+void computeGalileoCodePhase(galileo_channel_t *chan, galileo_range_t rho1, double dt)
+{
+	double ms;
+	int ims;
+	int is;
+	int sec_ms;
+	double rhorate;
+	
+	// Pseudorange rate.
+	rhorate = (rho1.range - chan->rho0.range)/dt;
+
+	// Carrier and code frequency.
+	chan->f_carr = -rhorate/LAMBDA_E1;
+	chan->f_code = CODE_FREQ + chan->f_carr*CARR_TO_CODE;
+	chan->f_boc = BOC_FREQ + (chan->f_carr*3.0) / 385.0;
+
+	// Initial code phase and data bit counters.
+	ms = ((subGalileoTime(chan->rho0.g,chan->g0)+6.0) - chan->rho0.range/SPEED_OF_LIGHT)*1000.0;
+	
+	ims = (int)ms;
+	is = (int)(ims/1000);
+	sec_ms = (int)(ms - (int)(ms/100)*100); // ms from 0 to 99 (int)
+	//chan->code_phase = (ms-(double)ims)*CA_SEQ_LEN; // in chip
+	chan->primary_code_phase = (ms-(double)(4*(int)(ms/4)))*PRIMARY_CODE_RATE; //from 0 to 4091.99999 (double)
+	chan->boc_phase = ( fmod(ms,(double)(1/PRIMARY_CODE_RATE)) / 12 ); // changing from 0 to 11, pointing on the state of boc1,1 and boc 6,1
+	chan->secondary_code_phase = (int)(sec_ms / 4); // changing from 0 to 24, 
+	
+	chan->page_even_odd = (is+1)%2; //even or odd page 0-1 in HORIZONTAL!!!! page (1-0 in vertical!!!)
+	chan->nominal_page = (is/2)%15;
+	chan->subframe = (is/30)%24;
+	
+	//chan->iword = ims/600; // 1 word = 30 bits = 600 ms
+	//ims -= chan->iword*600;
+			
+	//chan->ibit = ims/20; // 1 bit = 20 code = 20 ms
+	//ims -= chan->ibit*20;
+
+	chan->icode = ims; // 1 code = 1 ms
+
+	//chan->codeCA = chan->c_primary_code[(int)chan->code_phase]*2-1;
+	//chan->dataBit = (int)((chan->dwrd[chan->iword]>>(29-chan->ibit)) & 0x1UL)*2-1;
+
+	// Save current pseudorange
+	chan->rho0 = rho1;
 
 	return;
 }
